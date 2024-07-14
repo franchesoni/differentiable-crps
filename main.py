@@ -1,13 +1,3 @@
-# [DONE] ensure that we're not overfitting by evaluating on a validation set during training
-# [DONE] implement the crps loss
-# [DONE] implement the ce loss
-# implement the reliability diagram
-# check that the reliability diagram improves with more iterations
-# check that the mae of the median of the predicted distribution improves with more iterations
-# compare against the mae obtained by training with the mae
-# compare closed form crps against the numerical integral, check that the integral approximates the crps loss with more and more points
-
-
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -16,6 +6,8 @@ import numpy as np
 from typing import Sequence
 import tqdm
 import schedulefree
+
+import matplotlib.pyplot as plt
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -66,75 +58,71 @@ def pdf_to_cdf(pdf):
     return torch.cumsum(
         torch.cat([torch.zeros(pdf.shape[0], 1).to(pdf.device), pdf], dim=1),
         dim=1,
-    )
+    )  # (num bin borders,)
 
 
 def crps_loss_fixed_bins(predicted_pdf, y, bin_borders):
     """
-    Compute CRPS loss for fixed bin borders and predicted CDF values.
+    Compute CRPS loss for fixed bin borders and predicted PDF values.
+
+    Args:
+    predicted_pdf: tensor of shape (N, B)
+    y: tensor of shape (N,)
+    bin_borders: tensor of shape (B+1,)
+
+    Returns:
+    CRPS loss: tensor of shape (N,)
     """
-    device = y.device
+    N, B = predicted_pdf.shape
+    device = predicted_pdf.device
+
+    # Ensure inputs are on the same device
+    y = y.to(device)
     bin_borders = bin_borders.to(device)
-    batch_size = y.shape[0]
 
-    predicted_cdf = pdf_to_cdf(predicted_pdf)
+    # Compute CDF from PDF
+    cdf_values = torch.cat(
+        [torch.zeros(N, 1, device=device), torch.cumsum(predicted_pdf, dim=1)], dim=1
+    )
 
-    j = torch.searchsorted(bin_borders, y) - 1
-    j = torch.clamp(j, 0, len(bin_borders) - 2)
-
-    F_y = predicted_cdf[torch.arange(batch_size), j] + (
-        predicted_cdf[torch.arange(batch_size), j + 1]
-        - predicted_cdf[torch.arange(batch_size), j]
-    ) / (bin_borders[j + 1] - bin_borders[j]) * (y - bin_borders[j])
-
-    def integral_F_squared(F_i, F_i_plus_1, b_i, b_i_plus_1):
-        return -1 / 3 * (F_i**2 + F_i * F_i_plus_1 + F_i_plus_1**2) * (b_i - b_i_plus_1)
-
-    def integral_1_minus_F_squared(F_i, F_i_plus_1, b_i, b_i_plus_1):
-        return (
-            -1
-            / 3
-            * (3 + F_i**2 + F_i * (-3 + F_i_plus_1) - 3 * F_i_plus_1 + F_i_plus_1**2)
-            * (b_i - b_i_plus_1)
+    # Compute parts
+    parts = (
+        (cdf_values[:, :-1] + cdf_values[:, 1:])
+        / 2
+        * (bin_borders[1:] - bin_borders[:-1])
+    )
+    sq_parts = (
+        -1
+        / 3
+        * (
+            cdf_values[:, :-1] ** 2
+            + cdf_values[:, :-1] * cdf_values[:, 1:]
+            + cdf_values[:, 1:] ** 2
         )
-
-    # Create masks for each sample
-    mask = torch.arange(len(bin_borders) - 1, device=device)[None, :] < j[:, None]
-
-    # Compute the first part of CRPS
-    crps_part1 = torch.sum(
-        integral_F_squared(
-            predicted_cdf[:, :-1] * mask,
-            predicted_cdf[:, 1:] * mask,
-            bin_borders[:-1].expand(batch_size, -1) * mask,
-            bin_borders[1:].expand(batch_size, -1) * mask,
-        ),
-        dim=1,
+        * (bin_borders[:-1] - bin_borders[1:])
     )
 
-    # Compute the second part of CRPS
-    crps_part2 = integral_F_squared(
-        predicted_cdf[torch.arange(batch_size), j], F_y, bin_borders[j], y
-    )
+    # first part of the loss
+    p1 = bin_borders[-1] - y
+    # second part of the loss
+    p2 = torch.sum(sq_parts, dim=1)
 
-    # Compute the third part of CRPS
-    crps_part3 = integral_1_minus_F_squared(
-        F_y, predicted_cdf[torch.arange(batch_size), j + 1], y, bin_borders[j + 1]
-    )
+    # Find the bin index for each y
+    purek = torch.searchsorted(bin_borders, y.view(-1, 1)) - 1
+    k = torch.clamp(purek, 0, B - 1).squeeze()
 
-    # Compute the fourth part of CRPS
-    mask_inv = ~mask
-    crps_part4 = torch.sum(
-        integral_1_minus_F_squared(
-            predicted_cdf[:, :-1] * mask_inv,
-            predicted_cdf[:, 1:] * mask_inv,
-            bin_borders[:-1].expand(batch_size, -1) * mask_inv,
-            bin_borders[1:].expand(batch_size, -1) * mask_inv,
-        ),
-        dim=1,
-    )
+    # Compute CDF at y using linear interpolation
+    cdf_at_y = cdf_values[torch.arange(N), k] + (y - bin_borders[k]) / (
+        bin_borders[k + 1] - bin_borders[k]
+    ) * (cdf_values[torch.arange(N), k + 1] - cdf_values[torch.arange(N), k])
 
-    crps = crps_part1 + crps_part2 + crps_part3 + crps_part4
+    p3 = (
+        (cdf_at_y + cdf_values[torch.arange(N), k + 1]) / 2 * (bin_borders[k + 1] - y)
+    ) * ((bin_borders[0] - y < 0) * (y < bin_borders[-1])).float()
+    mask = torch.arange(B, device=predicted_pdf.device)[None, :] > purek
+    p4 = torch.sum(parts * mask, dim=1) * ((y - bin_borders[-1] < 0))
+
+    crps = torch.abs(p1) + p2 - 2 * (p3 + p4)
 
     return crps
 
@@ -209,6 +197,7 @@ def train(
     optimizer = schedulefree.AdamWScheduleFree(
         model.parameters(), lr=learning_rate, warmup_steps=int(num_steps * 0.05)
     )
+    model.upper_bound = train_time_series.max() * (1 + 1 / len(train_time_series))
 
     if loss_name == "mae":
         loss_fn = mae_loss
@@ -219,11 +208,9 @@ def train(
     else:
         raise NotImplementedError("Loss function not yet implemented")
 
-    model.upper_bound = train_time_series.max() * (1 + 1 / len(train_time_series))
+    # Training loop
     loss_curve = []
     val_loss_curve = {}
-
-    # Training loop
     step = 0
     while step < num_steps:
         model.train()
@@ -252,17 +239,18 @@ def train(
                 val_loss /= len(val_loader)
                 val_loss_curve[step] = val_loss
                 print(
-                    f"Step {step + 1}/{num_steps}, Train Loss: {loss.item():.4f}, Val loss: {val_loss:.4f}"
+                    f"Step {step + 1}/{num_steps}, Train Loss: {loss.item():.4f}, Val loss: {val_loss:.4f}",
+                    end="\r",
                 )
+                if val_loss_curve[step] == min(val_loss_curve.values()):
+                    torch.save(model.state_dict(), f"best_val_model.pth")
                 model.train()
                 optimizer.train()
-            print(
-                f"Step {step + 1}/{num_steps}, Train Loss: {loss.item():.4f}", end="\r"
-            )
 
             step += 1
             if step >= num_steps:
                 break
+    model.load_state_dict(torch.load("best_val_model.pth"))
     model.eval()
     optimizer.eval()
     return model, loss_curve, val_loss_curve
@@ -299,9 +287,12 @@ def evaluate(test_time_series, model, context, h, metric_name="diff"):
                     ) * (0.5 - cdf[i50m]) / (cdf[i50p] - cdf[i50m])
                 error = pred - target
             elif metric_name == "crps":
-                error = crps_loss_fixed_bins(
-                    pred[None], target[None], bin_borders
-                ).mean()
+                if pred.numel() == 1:
+                    bin_borders = torch.tensor(
+                        [0, pred.item(), pred.item() + 1e-9, model.upper_bound]
+                    ).to(DEVICE)
+                    pred = torch.tensor([[0, 1, 0]]).to(DEVICE)
+                error = crps_loss_fixed_bins(pred, target[None], bin_borders).mean()
             elif metric_name == "ce":
                 error = ce_loss(pred[None], target[None], model.upper_bound).mean()
             else:
@@ -310,23 +301,26 @@ def evaluate(test_time_series, model, context, h, metric_name="diff"):
     return errors
 
 
+
+
+
 def main(
     plot=False,
     b=False,
     context=18,
     h=6,
-    hidden_size=128,
-    num_layers=3,
-    learning_rate=1e-4,  # 5e-5 is ok for mae and 1e-3 for crps
-    num_steps=100,
-    batch_size=64,
+    size=["s", "m", "l"],
+    learning_rate=[
+        1e-5 * 4**i for i in range(6)
+    ],  # 5e-5 is ok for mae and 1e-3 for crps
+    batch_size=[32, 64, 128],
+    num_steps=500,
     val_every=10,
     loss_name="mae",
     seed=0,
 ):
-    np.random.seed(seed)
-    torch.manual_seed(seed)
     assert loss_name in ["mae", "ce", "crps"]
+
     # read the data
     datapath = "LE_E10_012016_122017_C10x10_fil.csv"
     data = pd.read_csv(datapath, header=None)
@@ -335,28 +329,63 @@ def main(
     csi = data[9].values  # clear sky index
     train_time_series = csi[: len(csi) // 2]
     test_time_series = csi[
-        len(csi) // 2 + 144 :
-    ]  # leave one day of space between train and test (10min intervals)
+        len(csi) // 2 + 6 * 24 :
+    ]  # leave one day ofintervals space between train and test (10min freq explains 6 * 24 it's a day)
 
-    # train the model
-    model, loss_curve, val_loss_curve = train(
-        train_time_series,
-        context,
-        h,
-        hidden_size,
-        learning_rate,
-        num_steps,
-        batch_size,
-        val_every,
-        num_layers,
-        loss_name,
-    )
+    best_val_loss = np.inf
+    exp_number = 0
+    for s in size:
+        if s == "s":
+            hidden_size = 32
+            num_layers = 1
+        elif s == "m":
+            hidden_size = 128
+            num_layers = 3
+        elif s == "l":
+            hidden_size = 512
+            num_layers = 5
+        for lr in learning_rate:
+            for bs in batch_size:
+                # seed everything
+                np.random.seed(seed)
+                torch.manual_seed(seed)
+                # train the model
+                model, loss_curve, val_loss_curve = train(
+                    train_time_series,
+                    context,
+                    h,
+                    hidden_size,
+                    lr,
+                    num_steps,
+                    bs,
+                    val_every,
+                    num_layers,
+                    loss_name,
+                )
+                if min(val_loss_curve.values()) < best_val_loss:
+                    best_val_loss = min(val_loss_curve.values())
+                    best_model = model
+                    best_so_far = True
+                else:
+                    best_so_far = False
+                print("=" * 80)
+                print("Experiment number", exp_number)
+                print("Parameters:", loss_name, "size", s, "lr", lr, "batch size", bs)
+                print("Best validation loss:", best_val_loss)
+                print("Best so far:", best_so_far)
+                exp_number += 1
 
-    # evaluate the model
+    print("Evaluating best model...")
+    model = best_model
+
+    # evaluate the best model
     errors = evaluate(test_time_series, model, context, h, metric_name="diff")
     errors = np.array(errors).flatten()
-
     print(f"Test MAE:", np.mean(np.abs(errors)))
+
+    crpss = evaluate(test_time_series, model, context, h, metric_name="crps")
+    crpss = np.array(crpss).flatten()
+    print(f"Test CRPS:", np.mean(crpss))
 
     if plot:
         import matplotlib.pyplot as plt
@@ -383,8 +412,27 @@ def main(
 
         ipdb.set_trace()
 
+# RESULTS:
+
+# Parameters: mae size s lr 0.00016 batch size 32
+# Best validation loss: 0.17201702264802796
+# Test MAE: 0.1547732080386128
+# Test CRPS: 0.15477322783504066
+
+# Parameters: ce size l lr 0.00256 batch size 64
+# Best validation loss: 3.6224256311144147
+# Test MAE: 0.17074449098917552
+# Test CRPS: 0.1279946840045208
+
+# Parameters: crps size m lr 0.00256 batch size 128
+# Best validation loss: 0.1059756154815356
+# Test MAE: 0.12988348985547576
+# Test CRPS: 0.09746930291549602
+
 
 if __name__ == "__main__":
+    # start a grid search over the parameters
+
     from fire import Fire
 
     Fire(main)
