@@ -61,7 +61,7 @@ def pdf_to_cdf(pdf):
     )  # (num bin borders,)
 
 
-def crps_loss_fixed_bins(predicted_pdf, y, bin_borders):
+def crps_loss_batch(predicted_pdf, y, bin_borders):
     """
     Compute CRPS loss for fixed bin borders and predicted PDF values.
 
@@ -146,7 +146,7 @@ def cached_linspace(start, end, steps):
 
 def crps_loss(pred, y, upper_bound):
     bin_borders = cached_linspace(0, upper_bound, 101)
-    return torch.mean(crps_loss_fixed_bins(pred, y, bin_borders))
+    return torch.mean(crps_loss_batch(pred, y, bin_borders))
 
 
 def ce_loss(pred, y, upper_bound):
@@ -292,7 +292,7 @@ def evaluate(test_time_series, model, context, h, metric_name="diff"):
                         [0, pred.item(), pred.item() + 1e-9, model.upper_bound]
                     ).to(DEVICE)
                     pred = torch.tensor([[0, 1, 0]]).to(DEVICE)
-                error = crps_loss_fixed_bins(pred, target[None], bin_borders).mean()
+                error = crps_loss_batch(pred, target[None], bin_borders).mean()
             elif metric_name == "ce":
                 error = ce_loss(pred[None], target[None], model.upper_bound).mean()
             else:
