@@ -54,35 +54,35 @@ def mae_loss(pred, target, **kwargs):
     return torch.mean(torch.abs(pred - target))
 
 
-def pdf_to_cdf(pdf):
+def binmass_to_cdf(binmass):
     return torch.cumsum(
-        torch.cat([torch.zeros(pdf.shape[0], 1).to(pdf.device), pdf], dim=1),
+        torch.cat([torch.zeros(binmass.shape[0], 1).to(binmass.device), binmass], dim=1),
         dim=1,
     )  # (num bin borders,)
 
 
-def crps_loss_batch(predicted_pdf, y, bin_borders):
+def crps_loss_batch(binmass, y, bin_borders):
     """
-    Compute CRPS loss for fixed bin borders and predicted PDF values.
+    Compute CRPS loss for given bin borders and bin probability mass values.
 
     Args:
-    predicted_pdf: tensor of shape (N, B)
+    binmass: tensor of shape (N, B)
     y: tensor of shape (N,)
     bin_borders: tensor of shape (B+1,)
 
     Returns:
     CRPS loss: tensor of shape (N,)
     """
-    N, B = predicted_pdf.shape
-    device = predicted_pdf.device
+    N, B = binmass.shape
+    device = binmass.device
 
     # Ensure inputs are on the same device
     y = y.to(device)
     bin_borders = bin_borders.to(device)
 
-    # Compute CDF from PDF
+    # Compute CDF from prob mass of bins
     cdf_values = torch.cat(
-        [torch.zeros(N, 1, device=device), torch.cumsum(predicted_pdf, dim=1)], dim=1
+        [torch.zeros(N, 1, device=device), torch.cumsum(binmass, dim=1)], dim=1
     )
 
     # Compute parts
@@ -119,7 +119,7 @@ def crps_loss_batch(predicted_pdf, y, bin_borders):
     p3 = (
         (cdf_at_y + cdf_values[torch.arange(N), k + 1]) / 2 * (bin_borders[k + 1] - y)
     ) * ((bin_borders[0] - y < 0) * (y < bin_borders[-1])).float()
-    mask = torch.arange(B, device=predicted_pdf.device)[None, :] > purek
+    mask = torch.arange(B, device=binmass.device)[None, :] > purek
     p4 = torch.sum(parts * mask, dim=1) * ((y - bin_borders[-1] < 0))
 
     crps = torch.abs(p1) + p2 - 2 * (p3 + p4)
@@ -277,7 +277,7 @@ def evaluate(test_time_series, model, context, h, metric_name="diff"):
             if metric_name == "diff":
                 if pred.numel() > 1:
                     # assume pred is a prob dist over bins
-                    cdf = pdf_to_cdf(pred).squeeze()  # should be (101,) now
+                    cdf = binmass_to_cdf(pred).squeeze()  # should be (101,) now
                     # find the index where 0.5 should be inserted to maintain order
                     i50p = torch.searchsorted(cdf, 0.5)
                     i50m = i50p - 1
