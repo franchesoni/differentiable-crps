@@ -56,7 +56,9 @@ def mae_loss(pred, target, **kwargs):
 
 def binmass_to_cdf(binmass):
     return torch.cumsum(
-        torch.cat([torch.zeros(binmass.shape[0], 1).to(binmass.device), binmass], dim=1),
+        torch.cat(
+            [torch.zeros(binmass.shape[0], 1).to(binmass.device), binmass], dim=1
+        ),
         dim=1,
     )  # (num bin borders,)
 
@@ -79,6 +81,8 @@ def crps_loss_batch(binmass, y, bin_borders):
     # Ensure inputs are on the same device
     y = y.to(device)
     bin_borders = bin_borders.to(device)
+    bin_widths = bin_borders[1:] - bin_borders[:-1]
+    assert (0 <= bin_widths).all(), "bin_borders are not ordered."
 
     # Compute CDF from prob mass of bins
     cdf_values = torch.cat(
@@ -86,11 +90,7 @@ def crps_loss_batch(binmass, y, bin_borders):
     )
 
     # Compute parts
-    parts = (
-        (cdf_values[:, :-1] + cdf_values[:, 1:])
-        / 2
-        * (bin_borders[1:] - bin_borders[:-1])
-    )
+    parts = (cdf_values[:, :-1] + cdf_values[:, 1:]) / 2 * (bin_widths)
     sq_parts = (
         -1
         / 3
@@ -99,7 +99,7 @@ def crps_loss_batch(binmass, y, bin_borders):
             + cdf_values[:, :-1] * cdf_values[:, 1:]
             + cdf_values[:, 1:] ** 2
         )
-        * (bin_borders[:-1] - bin_borders[1:])
+        * (-bin_widths)
     )
 
     # first part of the loss
@@ -112,9 +112,15 @@ def crps_loss_batch(binmass, y, bin_borders):
     k = torch.clamp(purek, 0, B - 1).squeeze()
 
     # Compute CDF at y using linear interpolation
-    cdf_at_y = cdf_values[torch.arange(N), k] + (y - bin_borders[k]) / (
-        bin_borders[k + 1] - bin_borders[k]
-    ) * (cdf_values[torch.arange(N), k + 1] - cdf_values[torch.arange(N), k])
+    cdf_at_y = cdf_values[torch.arange(N), k] + (
+        (
+            (y - bin_borders[k])
+            / (bin_widths[k])
+            * (cdf_values[torch.arange(N), k + 1] - cdf_values[torch.arange(N), k])
+        )
+        if (0 < bin_widths[k])
+        else 0
+    )
 
     p3 = (
         (cdf_at_y + cdf_values[torch.arange(N), k + 1]) / 2 * (bin_borders[k + 1] - y)
@@ -301,9 +307,6 @@ def evaluate(test_time_series, model, context, h, metric_name="diff"):
     return errors
 
 
-
-
-
 def main(
     plot=False,
     b=False,
@@ -411,6 +414,7 @@ def main(
         import ipdb
 
         ipdb.set_trace()
+
 
 # RESULTS:
 
