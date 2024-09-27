@@ -118,8 +118,6 @@ def crps_loss_batch(binmass, y, bin_borders):
             / (bin_widths[k])
             * (cdf_values[torch.arange(N), k + 1] - cdf_values[torch.arange(N), k])
         )
-        if (0 < bin_widths[k])
-        else 0
     )
 
     p3 = (
@@ -403,12 +401,13 @@ def main(
         plt.xlabel("Step")
         plt.ylabel("Log Loss")
         plt.legend()
+        plt.savefig(f"log_curve_{loss_name}.png")
 
         plt.figure()
         plt.hist(errors, bins=1000)
         plt.xlabel("Errors")
         plt.ylabel("Count")
-        plt.show()
+        plt.savefig(f"hist_{loss_name}.png")
 
     if b:
         import ipdb
