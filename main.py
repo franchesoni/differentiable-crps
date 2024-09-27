@@ -401,13 +401,13 @@ def main(
         plt.xlabel("Step")
         plt.ylabel("Log Loss")
         plt.legend()
-        plt.savefig(f"log_curve_{loss_name}.png")
+        plt.savefig(f"figs/log_curve_{loss_name}.png")
 
         plt.figure()
         plt.hist(errors, bins=1000)
         plt.xlabel("Errors")
         plt.ylabel("Count")
-        plt.savefig(f"hist_{loss_name}.png")
+        plt.savefig(f"figs/hist_{loss_name}.png")
 
     if b:
         import ipdb
@@ -432,6 +432,42 @@ def main(
 # Test MAE: 0.12988348985547576
 # Test CRPS: 0.09746930291549602
 
+# Now running with 
+#                  `python main.py --plot --size="[m,]" --learning_rate="[0.00256,]" --batch_size="[128,]" --loss_name=mae`
+#                  `python main.py --plot --size="[m,]" --learning_rate="[0.00256,]" --batch_size="[128,]" --loss_name=ce`
+#                  `python main.py --plot --size="[m,]" --learning_rate="[0.00256,]" --batch_size="[128,]" --loss_name=crps`
+# (these are the best hparams for CRPS in validation, and CE with these params outperforms the params chosen by CE val loss)
+# ================================================================================
+# Experiment number 0
+# Parameters: mae size m lr 0.00256 batch size 128
+# Best validation loss: 0.2461947219239341
+# Best so far: True
+# Evaluating best model...
+# 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 22043/22043 [00:03<00:00, 6248.20it/s]
+# Test MAE: 0.1573037923251696
+# 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 22043/22043 [00:13<00:00, 1628.51it/s]
+# Test CRPS: 0.1573037959646487
+# ================================================================================
+# Experiment number 0
+# Parameters: ce size m lr 0.00256 batch size 128
+# Best validation loss: 3.6347153584162393
+# Best so far: True
+# Evaluating best model...
+# 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 22043/22043 [00:05<00:00, 3725.66it/s]
+# Test MAE: 0.13040203570118658
+# 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 22043/22043 [00:12<00:00, 1758.34it/s]
+# Test CRPS: 0.09755296096694463
+# ================================================================================
+# Experiment number 0
+# Parameters: crps size m lr 0.00256 batch size 128
+# Best validation loss: 0.10597561899986532
+# Best so far: True
+# Evaluating best model...
+# 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 22043/22043 [00:05<00:00, 3844.65it/s]
+# Test MAE: 0.12988349102116056
+# 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 22043/22043 [00:12<00:00, 1785.49it/s]
+# Test CRPS: 0.09746930379835754
+
 
 if __name__ == "__main__":
     # start a grid search over the parameters
@@ -439,3 +475,4 @@ if __name__ == "__main__":
     from fire import Fire
 
     Fire(main)
+
